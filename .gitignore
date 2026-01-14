@@ -9,10 +9,11 @@ __pycache__/
 dist/
 build/
 
-# Database files
-data/*.db
-data/*.db-shm
-data/*.db-wal
+# Data directory (runtime databases)
+data/
+
+# Config with sensitive info (API keys)
+config.yaml
 
 # IDE
 .vscode/
@@ -22,3 +23,6 @@ data/*.db-wal
 # Virtual environment
 venv/
 .env
+
+# Logs
+*.log

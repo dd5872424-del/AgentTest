@@ -1,12 +1,17 @@
 """
 默认对话图：最简单的对话流程
-用户输入 → 拼合历史 → LLM 回复
+用户输入 → 构建 current_messages → LLM 回复 → 写回 raw_messages
+
+消息处理架构:
+    - raw_messages: 由 Runtime 追加用户输入，Node 追加 AI 回复
+    - current_messages: 由 Node 构建，包含 system prompt + 历史对话
 """
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from core.tools import ChatTools
 from core.state import ChatState
+from core.utils import build_current_messages, append_to_raw
 
 
 def build_graph(checkpointer: BaseCheckpointSaver = None):
@@ -18,27 +23,26 @@ def build_graph(checkpointer: BaseCheckpointSaver = None):
     """
     tools = ChatTools()
     
-    # 唯一节点：拼合历史 + 调用 LLM
+    # 唯一节点：构建 current_messages + 调用 LLM + 写回 raw_messages
     def respond(state: dict) -> dict:
-        messages = state.get("messages", [])
+        raw_messages = state.get("raw_messages", [])
         
-        # 构建 prompt：系统提示 + 最近对话
-        prompt = [
-            {"role": "system", "content": "你是一个友好的助手。"}
-        ]
+        # 1. 构建 current_messages：系统提示 + 最近对话
+        current_messages = build_current_messages(
+            raw_messages,
+            system_prompt="你是一个友好的助手。",
+            max_history=20
+        )
         
-        # 拼合历史对话（最近20条）
-        prompt.extend(messages[-20:])
+        # 2. 调用 LLM
+        response = tools.call_llm(current_messages)
         
-        # 调用 LLM
-        response = tools.call_llm(prompt)
-        
-        # 追加回复到消息列表
-        new_messages = messages.copy()
-        new_messages.append({"role": "assistant", "content": response})
+        # 3. 追加 AI 回复到 raw_messages
+        new_raw_messages = append_to_raw(raw_messages, "assistant", response)
         
         return {
-            "messages": new_messages,
+            "raw_messages": new_raw_messages,
+            "current_messages": current_messages,
             "last_output": response
         }
     

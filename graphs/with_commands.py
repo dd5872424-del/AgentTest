@@ -2,6 +2,11 @@
 带指令解析的对话图：支持 /设定 /记住 等指令
 
 记忆存储在 state.memories 中，由 checkpointer 自动持久化。
+
+消息处理架构:
+    - raw_messages: 由 Runtime 追加用户输入，Node 追加 AI 回复
+    - current_messages: 由 Node 构建，包含系统设定 + 记忆 + 历史对话
+    - chat_content: 剔除指令后的用户输入，用于 LLM 调用
 """
 import re
 from langgraph.graph import StateGraph, START, END
@@ -10,6 +15,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from core.tools import ChatTools
 from core.state import CommandState, RoleplayState
 from core.nodes import parse_commands
+from core.utils import build_current_messages, append_to_raw, to_api_messages
 
 
 class State(CommandState, RoleplayState, total=False):
@@ -91,9 +97,9 @@ def build_graph(checkpointer: BaseCheckpointSaver = None):
         mood = state.get("mood", "平静")
         scene = state.get("scene", "")
         character = state.get("character", {})
+        raw_messages = state.get("raw_messages", [])
         
-        prompt = []
-        
+        # 1. 构建系统提示
         system_parts = ["你是一个友好的助手。"]
         if character.get("name"):
             system_parts[0] = f"你是 {character['name']}。"
@@ -102,24 +108,35 @@ def build_graph(checkpointer: BaseCheckpointSaver = None):
         if scene:
             system_parts.append(f"场景：{scene}")
         
-        prompt.append({"role": "system", "content": " ".join(system_parts)})
+        system_prompt = " ".join(system_parts)
         
+        # 2. 构建额外系统消息（记忆）
+        extra_system = []
         if memories:
             memory_text = "\n".join([m.get("content", str(m)) for m in memories[:3]])
-            prompt.append({"role": "system", "content": f"相关记忆：\n{memory_text}"})
+            extra_system.append({"role": "system", "content": f"相关记忆：\n{memory_text}"})
         
-        messages = state.get("messages", [])
-        prompt.extend(messages[-8:])
-        prompt.append({"role": "user", "content": chat_content})
+        # 3. 构建 current_messages
+        # 使用 raw_messages 历史（不含最后一条用户消息，因为那可能包含指令）
+        history = raw_messages[:-1] if raw_messages else []
+        current_messages = build_current_messages(
+            history,
+            system_prompt=system_prompt,
+            max_history=8,
+            extra_system=extra_system
+        )
+        # 追加剔除指令后的用户输入
+        current_messages.append({"role": "user", "content": chat_content})
         
-        response = tools.call_llm(prompt)
+        # 4. 调用 LLM
+        response = tools.call_llm(current_messages)
         
-        new_messages = messages.copy()
-        new_messages.append({"role": "user", "content": chat_content})
-        new_messages.append({"role": "assistant", "content": response})
+        # 5. 追加 AI 回复到 raw_messages
+        new_raw_messages = append_to_raw(raw_messages, "assistant", response)
         
         return {
-            "messages": new_messages,
+            "raw_messages": new_raw_messages,
+            "current_messages": current_messages,
             "last_output": response
         }
     

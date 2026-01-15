@@ -2,16 +2,21 @@
 角色扮演图：带情绪追踪和角色设定
 
 状态会通过 checkpointer 自动持久化，包括：
-- messages: 对话历史
+- raw_messages: 对话历史（user + assistant）
 - character: 角色设定（首次从资产库加载）
 - mood: 情绪状态（跨轮次保持）
 - memories: 相关记忆
+
+消息处理架构:
+    - raw_messages: 由 Runtime 追加用户输入，Node 追加 AI 回复
+    - current_messages: 由 Node 构建，包含角色设定 + 历史对话
 """
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from core.tools import ChatTools
 from core.state import RoleplayState
+from core.utils import build_current_messages, append_to_raw, to_api_messages
 
 
 def build_graph(checkpointer: BaseCheckpointSaver = None):
@@ -28,12 +33,12 @@ def build_graph(checkpointer: BaseCheckpointSaver = None):
         character = state.get("character", {})
         mood = state.get("mood", "平静")
         memories = state.get("memories", [])
-        messages = state.get("messages", [])
+        raw_messages = state.get("raw_messages", [])
         
-        if not messages:
+        if not raw_messages:
             return {"inner_thought": ""}
         
-        user_said = messages[-1].get("content", "")
+        user_said = raw_messages[-1].get("content", "")
         memory_text = "\n".join([m.get("content", str(m)) for m in memories[:2]]) if memories else "无"
         
         prompt = f"""
@@ -52,37 +57,44 @@ def build_graph(checkpointer: BaseCheckpointSaver = None):
         character = state.get("character", {})
         mood = state.get("mood", "平静")
         thought = state.get("inner_thought", "")
-        messages = state.get("messages", [])
+        raw_messages = state.get("raw_messages", [])
         
-        prompt = [
-            {
-                "role": "system",
-                "content": f"""你是 {character.get('name', '角色')}
+        # 1. 构建 current_messages：角色设定 + 历史对话
+        system_prompt = f"""你是 {character.get('name', '角色')}
 性格：{character.get('personality', '友好')}
 场景：{character.get('scenario', '日常对话')}
 当前情绪：{mood}
 内心想法：{thought}
 
 请以角色身份自然地回复，保持性格一致。"""
-            }
-        ]
-        prompt.extend(messages[-10:])
         
-        response = tools.call_llm(prompt)
-        new_messages = state.get("messages", []).copy()
-        new_messages.append({"role": "assistant", "content": response})
+        current_messages = build_current_messages(
+            raw_messages,
+            system_prompt=system_prompt,
+            max_history=10
+        )
         
-        return {"messages": new_messages, "last_output": response}
+        # 2. 调用 LLM
+        response = tools.call_llm(current_messages)
+        
+        # 3. 追加 AI 回复到 raw_messages
+        new_raw_messages = append_to_raw(raw_messages, "assistant", response)
+        
+        return {
+            "raw_messages": new_raw_messages,
+            "current_messages": current_messages,
+            "last_output": response
+        }
     
     # 更新情绪
     def update_mood(state):
-        messages = state.get("messages", [])
+        raw_messages = state.get("raw_messages", [])
         current_mood = state.get("mood", "平静")
         
-        if len(messages) < 2:
+        if len(raw_messages) < 2:
             return {}
         
-        recent = messages[-2:]
+        recent = raw_messages[-2:]
         context = "\n".join([f"{m['role']}: {m['content']}" for m in recent])
         
         prompt = f"""

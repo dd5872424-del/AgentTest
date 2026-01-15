@@ -161,7 +161,7 @@ class Runtime:
         Returns:
             初始状态字典
         """
-        state = {"messages": []}
+        state = {"raw_messages": []}
         
         # 解析 content_refs
         content_refs = conv.get("content_refs")
@@ -254,18 +254,18 @@ class Runtime:
         current_state = graph.get_state(config)
         
         if current_state.values:
-            # 已有状态，追加用户消息
-            messages = current_state.values.get("messages", [])
-            messages.append({"role": "user", "content": user_input})
+            # 已有状态，追加用户消息到 raw_messages
+            raw_messages = current_state.values.get("raw_messages", [])
+            raw_messages.append({"role": "user", "content": user_input})
             input_state = {
-                "messages": messages,
+                "raw_messages": raw_messages,
                 "user_input": user_input,
                 "raw_input": user_input,
             }
         else:
             # 首次对话，加载资产构建初始状态
             input_state = self._build_initial_state(conv)
-            input_state["messages"] = [{"role": "user", "content": user_input}]
+            input_state["raw_messages"] = [{"role": "user", "content": user_input}]
             input_state["user_input"] = user_input
             input_state["raw_input"] = user_input
         
@@ -296,16 +296,18 @@ class Runtime:
         current_state = graph.get_state(config)
         
         if current_state.values:
-            messages = current_state.values.get("messages", [])
-            messages.append({"role": "user", "content": user_input})
+            # 已有状态，追加用户消息到 raw_messages
+            raw_messages = current_state.values.get("raw_messages", [])
+            raw_messages.append({"role": "user", "content": user_input})
             input_state = {
-                "messages": messages,
+                "raw_messages": raw_messages,
                 "user_input": user_input,
                 "raw_input": user_input,
             }
         else:
+            # 首次对话，加载资产构建初始状态
             input_state = self._build_initial_state(conv)
-            input_state["messages"] = [{"role": "user", "content": user_input}]
+            input_state["raw_messages"] = [{"role": "user", "content": user_input}]
             input_state["user_input"] = user_input
             input_state["raw_input"] = user_input
         
@@ -319,7 +321,7 @@ class Runtime:
     # ============================================================
     
     def get_history(self, conversation_id: str) -> list[dict]:
-        """获取对话历史（从 checkpoint 读取）"""
+        """获取对话历史（从 raw_messages 读取）"""
         conv = self.get_conversation(conversation_id)
         if not conv:
             return []
@@ -329,7 +331,7 @@ class Runtime:
         
         state = graph.get_state(config)
         if state and state.values:
-            return state.values.get("messages", [])
+            return state.values.get("raw_messages", [])
         return []
     
     def get_state(self, conversation_id: str) -> Optional[dict]:
@@ -382,8 +384,21 @@ class Runtime:
         state = graph.get_state(config)
         return state.values if state else {}
     
-    def regenerate(self, conversation_id: str) -> dict:
-        """重新生成最后一条 AI 回复"""
+    def regenerate(self, conversation_id: str, 
+                   stream_callback: Callable[[str], None] = None) -> dict:
+        """
+        重新生成最后一条 AI 回复
+        
+        从当前状态的 raw_messages 中删除最后的 AI 回复，然后重新执行图。
+        这样可以保留用户对消息的编辑。
+        
+        Args:
+            conversation_id: 会话 ID
+            stream_callback: 可选的流式输出回调函数
+        
+        Returns:
+            重新生成后的状态
+        """
         conv = self.get_conversation(conversation_id)
         if not conv:
             raise ValueError(f"会话不存在: {conversation_id}")
@@ -392,30 +407,42 @@ class Runtime:
         thread_id = conv["thread_id"]
         config = {"configurable": {"thread_id": thread_id}}
         
-        # 获取历史状态
-        history = list(graph.get_state_history(config))
+        # 获取当前状态
+        current_state = graph.get_state(config)
+        if not current_state or not current_state.values:
+            raise ValueError("没有可用的状态来重新生成")
         
-        if len(history) < 2:
-            raise ValueError("没有足够的历史记录来重新生成")
+        raw_messages = current_state.values.get("raw_messages", [])
+        if not raw_messages:
+            raise ValueError("没有消息可以重新生成")
         
-        # 回到上一个状态（用户消息之前）
-        # 找到包含最后一条用户消息但没有 AI 回复的状态
-        for state in history[1:]:  # 跳过最新的（包含 AI 回复）
-            messages = state.values.get("messages", [])
-            if messages and messages[-1].get("role") == "user":
-                # 从这个状态重新执行
-                result = graph.invoke(
-                    None,  # 不传新输入，使用历史状态
-                    config={
-                        "configurable": {
-                            "thread_id": thread_id,
-                            "checkpoint_id": state.config["configurable"]["checkpoint_id"],
-                        }
-                    }
-                )
-                return result
+        # 找到最后一条 AI 回复并删除
+        # 从后往前找，删除连续的 assistant 消息，直到遇到 user 消息
+        while raw_messages and raw_messages[-1].get("role") == "assistant":
+            raw_messages.pop()
         
-        raise ValueError("找不到可以重新生成的状态")
+        if not raw_messages or raw_messages[-1].get("role") != "user":
+            raise ValueError("找不到用户消息来重新生成回复")
+        
+        # 构建输入状态（保留当前状态的其他字段）
+        input_state = dict(current_state.values)
+        input_state["raw_messages"] = raw_messages
+        # 保留最后一条用户消息作为 user_input
+        input_state["user_input"] = raw_messages[-1].get("content", "")
+        input_state["raw_input"] = raw_messages[-1].get("content", "")
+        
+        # 设置流式回调
+        if stream_callback:
+            set_stream_callback(stream_callback)
+        
+        try:
+            result = graph.invoke(input_state, config=config)
+        finally:
+            if stream_callback:
+                set_stream_callback(None)
+        
+        self.conversations.touch(conversation_id)
+        return result
     
     # ============================================================
     # 直接编辑 State（不创建新 checkpoint）
@@ -427,7 +454,7 @@ class Runtime:
         
         Args:
             conversation_id: 会话 ID
-            updates: 要更新的字段，如 {"mood": "开心"} 或整个 messages 列表
+            updates: 要更新的字段，如 {"mood": "开心"} 或整个 raw_messages 列表
         
         Returns:
             是否修改成功
@@ -437,9 +464,9 @@ class Runtime:
             runtime.edit_state(conv_id, {"mood": "开心"})
             
             # 修改某条消息
-            messages = runtime.get_history(conv_id)
-            messages[2]["content"] = "修改后的内容"
-            runtime.edit_state(conv_id, {"messages": messages})
+            raw_messages = runtime.get_history(conv_id)
+            raw_messages[2]["content"] = "修改后的内容"
+            runtime.edit_state(conv_id, {"raw_messages": raw_messages})
         """
         conv = self.get_conversation(conversation_id)
         if not conv:
@@ -486,7 +513,7 @@ class Runtime:
     def edit_message(self, conversation_id: str, message_index: int, 
                      new_content: str) -> bool:
         """
-        编辑指定位置的消息内容
+        编辑指定位置的消息内容（操作 raw_messages）
         
         Args:
             conversation_id: 会话 ID
@@ -496,16 +523,16 @@ class Runtime:
         Returns:
             是否修改成功
         """
-        messages = self.get_history(conversation_id)
-        if not messages or message_index < 0 or message_index >= len(messages):
+        raw_messages = self.get_history(conversation_id)
+        if not raw_messages or message_index < 0 or message_index >= len(raw_messages):
             return False
         
-        messages[message_index]["content"] = new_content
-        return self.edit_state(conversation_id, {"messages": messages})
+        raw_messages[message_index]["content"] = new_content
+        return self.edit_state(conversation_id, {"raw_messages": raw_messages})
     
     def delete_message(self, conversation_id: str, message_index: int) -> bool:
         """
-        删除指定位置的消息
+        删除指定位置的消息（操作 raw_messages）
         
         Args:
             conversation_id: 会话 ID
@@ -514,16 +541,16 @@ class Runtime:
         Returns:
             是否删除成功
         """
-        messages = self.get_history(conversation_id)
-        if not messages or message_index < 0 or message_index >= len(messages):
+        raw_messages = self.get_history(conversation_id)
+        if not raw_messages or message_index < 0 or message_index >= len(raw_messages):
             return False
         
-        del messages[message_index]
-        return self.edit_state(conversation_id, {"messages": messages})
+        del raw_messages[message_index]
+        return self.edit_state(conversation_id, {"raw_messages": raw_messages})
     
     def delete_messages_after(self, conversation_id: str, message_index: int) -> bool:
         """
-        删除指定位置之后的所有消息（保留该消息）
+        删除指定位置之后的所有消息（保留该消息，操作 raw_messages）
         
         Args:
             conversation_id: 会话 ID
@@ -532,9 +559,9 @@ class Runtime:
         Returns:
             是否删除成功
         """
-        messages = self.get_history(conversation_id)
-        if not messages or message_index < 0 or message_index >= len(messages):
+        raw_messages = self.get_history(conversation_id)
+        if not raw_messages or message_index < 0 or message_index >= len(raw_messages):
             return False
         
-        messages = messages[:message_index + 1]
-        return self.edit_state(conversation_id, {"messages": messages})
+        raw_messages = raw_messages[:message_index + 1]
+        return self.edit_state(conversation_id, {"raw_messages": raw_messages})

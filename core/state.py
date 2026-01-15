@@ -3,6 +3,11 @@ State 基类定义
 
 所有图的 State 都应继承这些基类，确保接口一致性。
 
+消息管理架构:
+    - raw_messages: 持久化的实际对话（user + assistant），用于前端显示、用户编辑
+    - current_messages: 处理中的消息，由 Node 构建，用于 LLM 调用
+    - extra_messages: 动态注入内容，由 Node 生成（RAG、System Prompt 等）
+
 使用示例:
     from core.state import BaseState, ChatState
     
@@ -23,37 +28,51 @@ class BaseState(TypedDict, total=False):
     基础状态类，所有自定义 State 应继承此类
     
     核心字段:
-    - messages: 对话消息列表
+    - raw_messages: 持久化的实际对话列表（仅 user + assistant）
+    - current_messages: 处理中的消息列表（由 Node 构建，可包含 system 等）
+    - extra_messages: 动态注入的消息列表（由 Node 生成）
     - user_input: 当前轮用户输入
     - raw_input: 原始输入（未处理）
     - last_output: 最后一条 AI 输出
     - message_id_counter: 消息 ID 计数器
     
-    messages 消息格式:
-        必须字段（LLM API 需要）:
-        - role: "user" | "assistant" | "system"
+    raw_messages 消息格式（前端显示用）:
+        必须字段:
+        - role: "user" | "assistant"
         - content: 消息内容
         
-        可选字段（内部元数据，不发送给 API）:
+        可选字段（内部元数据）:
         - id: 消息唯一标识，用于编辑/回滚
         
         示例:
         {"role": "user", "content": "你好", "id": 1}
         {"role": "assistant", "content": "你好！", "id": 2}
     
-    使用 to_api_messages() 转换为纯净的 API 格式
-    轮次可通过 get_current_turn(state) 计算
+    current_messages 消息格式（LLM 调用用）:
+        - role: "user" | "assistant" | "system"
+        - content: 消息内容
+        
+        由 Node 从 raw_messages + extra_messages 构建
+        可包含 system prompt、历史裁剪、注入内容等
+    
+    extra_messages 消息格式（动态注入用）:
+        - role: "system" | "user" | "assistant"
+        - content: 消息内容
+        - position: int | "start" | "end"（可选，合并位置）
+        
+        由 Node 生成（RAG 检索、System Prompt 构建等）
+    
+    职责划分:
+        - Runtime: 把用户输入追加到 raw_messages，调用 graph
+        - Node: 完全管理 extra_messages、current_messages，写回 AI 回复到 raw_messages
     """
-    messages: list
+    raw_messages: list
+    current_messages: list
+    extra_messages: list
     user_input: str
     raw_input: str
     last_output: str
     message_id_counter: int
-    
-    # 额外消息列表，用于单轮注入（如 RAG 检索结果、System Prompt、Few-Shot 示例）
-    # 这些消息会在 merge_messages() 时动态插入，但不会永久保存在 messages 历史中
-    # 格式: [{"role": "...", "content": "...", "position": int | "start" | "end"}]
-    extra_messages: list
 
 
 class ChatState(BaseState, total=False):

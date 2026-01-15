@@ -2,37 +2,34 @@
 存储层：可扩展的数据存储抽象
 
 使用方式：
-    from core.storage import MessageStore, MemoryStore, ConversationStore
-    from core.storage import SQLiteMessageStore, InMemoryMessageStore
+    from core.storage import ConversationStore, ContentStore
+    from core.storage import SQLiteConversationStore, SQLiteContentStore
+    from core.storage import InMemoryConversationStore, InMemoryContentStore
+
+注意：消息和记忆现在由 LangGraph checkpointer 管理，不再使用独立存储。
 """
 
 from .base import (
-    MessageStore,
-    MemoryStore, 
     ConversationStore,
+    ContentStore,
 )
 from .sqlite import (
-    SQLiteMessageStore,
-    SQLiteMemoryStore,
     SQLiteConversationStore,
+    SQLiteContentStore,
 )
 from .memory import (
-    InMemoryMessageStore,
-    InMemoryMemoryStore,
     InMemoryConversationStore,
+    InMemoryContentStore,
 )
 
 __all__ = [
     # 抽象接口
-    "MessageStore",
-    "MemoryStore",
     "ConversationStore",
+    "ContentStore",
     # SQLite 实现
-    "SQLiteMessageStore",
-    "SQLiteMemoryStore",
     "SQLiteConversationStore",
+    "SQLiteContentStore",
     # 内存实现
-    "InMemoryMessageStore",
-    "InMemoryMemoryStore",
     "InMemoryConversationStore",
+    "InMemoryContentStore",
 ]

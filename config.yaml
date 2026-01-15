@@ -1,0 +1,32 @@
+# 框架配置
+# API Key 从 .env 文件读取
+
+# LLM 配置
+llm:
+  provider: openai
+  model: deepseek-chat
+  # api_key 和 base_url 从环境变量读取 (OPENAI_API_KEY, OPENAI_BASE_URL)
+  
+  # 生成参数
+  max_tokens: 2048        # 最大输出 token 数
+  temperature: 0.7        # 温度 (0-2)，越高越随机
+  top_p: 1.0              # nucleus sampling (0-1)
+  # top_k: 50             # top-k sampling (部分模型支持)
+  # frequency_penalty: 0  # 频率惩罚 (-2 到 2)
+  # presence_penalty: 0   # 存在惩罚 (-2 到 2)
+  
+  # 请求配置
+  stream: true           # 是否流式输出
+  timeout: 60             # 请求超时（秒）
+  max_retries: 0          # 最大重试次数
+
+# 数据库配置
+database:
+  app_path: data/app.db        # 运行时数据（会话 + checkpoint）
+  content_path: data/content.db # 内容资产（角色卡、预设等）
+
+# 向量库配置（预留）
+vector_store:
+  enabled: false
+  provider: chroma
+  path: data/vectors

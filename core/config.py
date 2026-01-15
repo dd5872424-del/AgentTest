@@ -12,10 +12,24 @@ from typing import Optional
 @dataclass
 class LLMConfig:
     """LLM 配置"""
+    # 基础配置
     provider: str = "openai"
     model: str = "gpt-4"
     api_key: Optional[str] = None
     base_url: Optional[str] = None
+    
+    # 生成参数
+    max_tokens: Optional[int] = None          # 最大输出 token 数
+    temperature: Optional[float] = None       # 温度 (0-2)，越高越随机
+    top_p: Optional[float] = None             # nucleus sampling
+    top_k: Optional[int] = None               # top-k sampling (部分模型支持)
+    frequency_penalty: Optional[float] = None # 频率惩罚 (-2 到 2)
+    presence_penalty: Optional[float] = None  # 存在惩罚 (-2 到 2)
+    
+    # 请求配置
+    stream: bool = False                      # 是否流式输出
+    timeout: Optional[int] = 60               # 请求超时（秒）
+    max_retries: int = 2                      # 最大重试次数
     
     def __post_init__(self):
         # 优先使用配置文件中的值，否则从环境变量读取
@@ -28,9 +42,8 @@ class LLMConfig:
 @dataclass
 class DatabaseConfig:
     """数据库配置"""
-    path: str = "data/app.db"
-    messages_path: str = "data/messages.db"
-    memories_path: str = "data/memories.db"
+    app_path: str = "data/app.db"           # 运行时数据（会话 + checkpoint）
+    content_path: str = "data/content.db"   # 内容资产（角色卡、预设等）
 
 
 @dataclass
@@ -104,6 +117,19 @@ def load_config(path: str = None) -> Config:
     
     with open(config_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
+    
+    # 加载 secrets.yaml 中的敏感配置
+    secrets_path = config_path.parent / "secrets.yaml"
+    if secrets_path.exists():
+        with open(secrets_path, "r", encoding="utf-8") as f:
+            secrets = yaml.safe_load(f) or {}
+        # 合并到 llm 配置
+        if "llm" not in data:
+            data["llm"] = {}
+        if "api_key" in secrets:
+            data["llm"]["api_key"] = secrets["api_key"]
+        if "base_url" in secrets:
+            data["llm"]["base_url"] = secrets["base_url"]
     
     return _dict_to_dataclass(Config, data)
 

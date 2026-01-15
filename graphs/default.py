@@ -3,21 +3,20 @@
 用户输入 → 拼合历史 → LLM 回复
 """
 from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from core.tools import ChatTools
 from core.state import ChatState
-from core.storage import MemoryStore
 
 
-def build_graph(conversation_id: str, memory_store: MemoryStore):
+def build_graph(checkpointer: BaseCheckpointSaver = None):
     """
     构建默认对话图
     
     Args:
-        conversation_id: 会话 ID
-        memory_store: 记忆存储（由 Runtime 传入）
+        checkpointer: LangGraph checkpointer（状态持久化）
     """
-    tools = ChatTools(conversation_id, memory_store=memory_store)
+    tools = ChatTools()
     
     # 唯一节点：拼合历史 + 调用 LLM
     def respond(state: dict) -> dict:
@@ -50,4 +49,4 @@ def build_graph(conversation_id: str, memory_store: MemoryStore):
     graph.add_edge(START, "respond")
     graph.add_edge("respond", END)
     
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)

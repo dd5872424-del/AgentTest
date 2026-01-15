@@ -61,11 +61,13 @@ class ChatState(BaseState, total=False):
     标准聊天状态
     
     扩展字段:
-    - memories: 检索到的相关记忆
-    - metadata: 元数据（可存储任意扩展信息）
+    - memories: 会话记忆列表 [{"type": "...", "content": "..."}]
+    - preset: 预设配置（从 content_refs 加载）
+    - world_info: 世界观列表（从 content_refs 加载）
     """
     memories: list
-    metadata: dict
+    preset: dict
+    world_info: list
 
 
 class RoleplayState(ChatState, total=False):
@@ -73,14 +75,13 @@ class RoleplayState(ChatState, total=False):
     角色扮演状态
     
     扩展字段:
-    - character: 角色信息 {"name": "...", "personality": "...", "scenario": "..."}
+    - character: 角色信息（从 content_refs 加载）
+        {"name": "...", "personality": "...", "scenario": "...", "first_message": "..."}
     - mood: 角色当前情绪
-    - scene: 当前场景描述
-    - inner_thought: 角色内心想法
+    - inner_thought: 角色内心想法（调试用）
     """
     character: dict
     mood: str
-    scene: str
     inner_thought: str
 
 

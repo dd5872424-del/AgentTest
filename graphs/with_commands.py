@@ -1,13 +1,15 @@
 """
 带指令解析的对话图：支持 /设定 /记住 等指令
+
+记忆存储在 state.memories 中，由 checkpointer 自动持久化。
 """
 import re
 from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from core.tools import ChatTools
 from core.state import CommandState, RoleplayState
-from core.storage import MemoryStore
-from core.nodes import retrieve_memory, save_memory, parse_commands
+from core.nodes import parse_commands
 
 
 class State(CommandState, RoleplayState, total=False):
@@ -19,9 +21,9 @@ class State(CommandState, RoleplayState, total=False):
     pass
 
 
-def build_graph(conversation_id: str, memory_store: MemoryStore):
+def build_graph(checkpointer: BaseCheckpointSaver = None):
     """构建带指令的对话图"""
-    tools = ChatTools(conversation_id, memory_store=memory_store)
+    tools = ChatTools()
     
     # 执行指令（纯逻辑，非 LLM）
     def execute_commands(state):
@@ -57,15 +59,21 @@ def build_graph(conversation_id: str, memory_store: MemoryStore):
                     results.append(f"✗ 格式错误，应为：/设定 字段：值")
             
             elif command == "记住":
-                tools.save_memory(arg, type="user_note")
+                # 将记忆添加到 state.memories
+                memories = state.get("memories", []).copy()
+                memories.append({"type": "user_note", "content": arg})
+                updates["memories"] = memories
                 results.append(f"✓ 已记住：{arg}")
             
             elif command == "忘记":
-                tools.memory.delete(arg)
+                # 从 state.memories 中删除包含关键词的记忆
+                memories = state.get("memories", [])
+                filtered = [m for m in memories if arg not in m.get("content", "")]
+                updates["memories"] = filtered
                 results.append(f"✓ 已尝试忘记关于「{arg}」的记忆")
             
             elif command == "清空记忆":
-                tools.memory.clear()
+                updates["memories"] = []
                 results.append("✓ 已清空所有记忆")
             
             else:
@@ -97,7 +105,7 @@ def build_graph(conversation_id: str, memory_store: MemoryStore):
         prompt.append({"role": "system", "content": " ".join(system_parts)})
         
         if memories:
-            memory_text = "\n".join([m["content"] for m in memories[:3]])
+            memory_text = "\n".join([m.get("content", str(m)) for m in memories[:3]])
             prompt.append({"role": "system", "content": f"相关记忆：\n{memory_text}"})
         
         messages = state.get("messages", [])
@@ -145,10 +153,8 @@ def build_graph(conversation_id: str, memory_store: MemoryStore):
     
     graph.add_node("parse", parse_commands())
     graph.add_node("exec_cmd", execute_commands)
-    graph.add_node("retrieve", retrieve_memory(tools, top_k=3))
     graph.add_node("chat", process_chat)
     graph.add_node("merge", merge_output)
-    graph.add_node("save", save_memory(tools, type="chat"))
     graph.add_node("noop_cmd", noop)
     graph.add_node("noop_chat", lambda s: {"last_output": ""})
     
@@ -163,21 +169,19 @@ def build_graph(conversation_id: str, memory_store: MemoryStore):
     graph.add_conditional_edges(
         "exec_cmd",
         has_chat,
-        {True: "retrieve", False: "merge"}
+        {True: "chat", False: "merge"}
     )
     
     graph.add_conditional_edges(
         "noop_cmd",
         has_chat,
-        {True: "retrieve", False: "merge"}
+        {True: "chat", False: "merge"}
     )
     
-    graph.add_edge("retrieve", "chat")
     graph.add_edge("chat", "merge")
-    graph.add_edge("merge", "save")
-    graph.add_edge("save", END)
+    graph.add_edge("merge", END)
     
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 def get_initial_state():

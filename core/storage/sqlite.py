@@ -2,16 +2,19 @@
 SQLite 存储实现
 
 使用线程本地存储管理连接，避免频繁创建连接的开销。
+
+注意：消息和记忆现在由 LangGraph checkpointer 管理，不再使用独立存储。
 """
+from __future__ import annotations
+
 import json
 import sqlite3
 import threading
 from pathlib import Path
 from typing import Optional
-from datetime import datetime
 from contextlib import contextmanager
 
-from .base import MessageStore, MemoryStore, ConversationStore
+from .base import ConversationStore, ContentStore
 
 
 class SQLiteConnectionMixin:
@@ -59,154 +62,6 @@ class SQLiteConnectionMixin:
             self._local.conn = None
 
 
-class SQLiteMessageStore(SQLiteConnectionMixin, MessageStore):
-    """SQLite 消息存储"""
-    
-    def __init__(self, db_path: str = "data/messages.db"):
-        self.db_path = db_path
-        self._init_connection()
-        self._ensure_table()
-    
-    def _ensure_table(self):
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        with self.transaction() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    conversation_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    metadata TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_messages_conv 
-                ON messages(conversation_id)
-            """)
-    
-    def add(self, conversation_id: str, role: str, content: str,
-            metadata: dict = None) -> int:
-        with self.transaction() as conn:
-            cursor = conn.execute("""
-                INSERT INTO messages (conversation_id, role, content, metadata)
-                VALUES (?, ?, ?, ?)
-            """, (conversation_id, role, content, 
-                  json.dumps(metadata) if metadata else None))
-            return cursor.lastrowid
-    
-    def get_by_conversation(self, conversation_id: str, 
-                           limit: int = 100) -> list[dict]:
-        cursor = self.conn.execute("""
-            SELECT id, role, content, metadata, created_at
-            FROM messages 
-            WHERE conversation_id = ?
-            ORDER BY created_at ASC
-            LIMIT ?
-        """, (conversation_id, limit))
-        return [dict(row) for row in cursor.fetchall()]
-    
-    def get_recent(self, conversation_id: str, n: int = 5) -> list[dict]:
-        cursor = self.conn.execute("""
-            SELECT id, role, content, metadata, created_at
-            FROM messages 
-            WHERE conversation_id = ?
-            ORDER BY created_at DESC
-            LIMIT ?
-        """, (conversation_id, n))
-        rows = [dict(row) for row in cursor.fetchall()]
-        return list(reversed(rows))
-    
-    def update(self, message_id: int, new_content: str):
-        with self.transaction() as conn:
-            conn.execute(
-                "UPDATE messages SET content = ? WHERE id = ?",
-                (new_content, message_id)
-            )
-    
-    def delete(self, message_id: int):
-        with self.transaction() as conn:
-            conn.execute("DELETE FROM messages WHERE id = ?", (message_id,))
-    
-    def delete_after(self, conversation_id: str, message_id: int):
-        with self.transaction() as conn:
-            conn.execute("""
-                DELETE FROM messages 
-                WHERE conversation_id = ? AND id > ?
-            """, (conversation_id, message_id))
-    
-    def clear(self, conversation_id: str):
-        with self.transaction() as conn:
-            conn.execute(
-                "DELETE FROM messages WHERE conversation_id = ?",
-                (conversation_id,)
-            )
-
-
-class SQLiteMemoryStore(SQLiteConnectionMixin, MemoryStore):
-    """SQLite 记忆存储"""
-    
-    def __init__(self, db_path: str = "data/memories.db"):
-        self.db_path = db_path
-        self._init_connection()
-        self._ensure_table()
-    
-    def _ensure_table(self):
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        with self.transaction() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS memories (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    conversation_id TEXT NOT NULL,
-                    type TEXT DEFAULT 'default',
-                    content TEXT NOT NULL,
-                    metadata TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_memories_conv 
-                ON memories(conversation_id)
-            """)
-    
-    def add(self, conversation_id: str, content: str,
-            type: str = "default", metadata: dict = None) -> int:
-        with self.transaction() as conn:
-            cursor = conn.execute("""
-                INSERT INTO memories (conversation_id, type, content, metadata)
-                VALUES (?, ?, ?, ?)
-            """, (conversation_id, type, content,
-                  json.dumps(metadata) if metadata else None))
-            return cursor.lastrowid
-    
-    def search(self, conversation_id: str, query: str = None,
-               top_k: int = 5) -> list[dict]:
-        # 简单实现：返回最近的 top_k 条
-        # 可扩展：添加向量检索
-        cursor = self.conn.execute("""
-            SELECT id, type, content, metadata, created_at
-            FROM memories 
-            WHERE conversation_id = ?
-            ORDER BY created_at DESC
-            LIMIT ?
-        """, (conversation_id, top_k))
-        return [dict(row) for row in cursor.fetchall()]
-    
-    def delete_by_keyword(self, conversation_id: str, keyword: str):
-        with self.transaction() as conn:
-            conn.execute("""
-                DELETE FROM memories 
-                WHERE conversation_id = ? AND content LIKE ?
-            """, (conversation_id, f"%{keyword}%"))
-    
-    def clear(self, conversation_id: str):
-        with self.transaction() as conn:
-            conn.execute(
-                "DELETE FROM memories WHERE conversation_id = ?",
-                (conversation_id,)
-            )
-
-
 class SQLiteConversationStore(SQLiteConnectionMixin, ConversationStore):
     """SQLite 会话存储"""
     
@@ -224,6 +79,7 @@ class SQLiteConversationStore(SQLiteConnectionMixin, ConversationStore):
                     graph_name TEXT NOT NULL,
                     thread_id TEXT UNIQUE NOT NULL,
                     title TEXT,
+                    content_refs TEXT,
                     config TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -231,12 +87,15 @@ class SQLiteConversationStore(SQLiteConnectionMixin, ConversationStore):
             """)
     
     def create(self, id: str, graph_name: str, thread_id: str,
-               title: str = None, config: dict = None):
+               title: str = None, content_refs: dict = None,
+               config: dict = None):
         with self.transaction() as conn:
             conn.execute("""
-                INSERT INTO conversations (id, graph_name, thread_id, title, config)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO conversations 
+                (id, graph_name, thread_id, title, content_refs, config)
+                VALUES (?, ?, ?, ?, ?, ?)
             """, (id, graph_name, thread_id, title,
+                  json.dumps(content_refs) if content_refs else None,
                   json.dumps(config) if config else None))
     
     def get(self, conversation_id: str) -> Optional[dict]:
@@ -279,3 +138,128 @@ class SQLiteConversationStore(SQLiteConnectionMixin, ConversationStore):
                 SET updated_at = CURRENT_TIMESTAMP 
                 WHERE id = ?
             """, (conversation_id,))
+
+
+class SQLiteContentStore(SQLiteConnectionMixin, ContentStore):
+    """
+    SQLite 内容存储
+    
+    存储角色卡、World Info、预设等结构化内容。
+    """
+    
+    def __init__(self, db_path: str = "data/content.db"):
+        self.db_path = db_path
+        self._init_connection()
+        self._ensure_table()
+    
+    def _ensure_table(self):
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        with self.transaction() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS contents (
+                    id TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    scope TEXT DEFAULT 'global',
+                    data TEXT NOT NULL,
+                    tags TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (type, id, scope)
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_contents_type_scope 
+                ON contents(type, scope)
+            """)
+    
+    def save(self, type: str, id: str, data: dict,
+             scope: str = "global", tags: list[str] = None) -> None:
+        """保存内容（Upsert：存在则更新，不存在则创建）"""
+        with self.transaction() as conn:
+            conn.execute("""
+                INSERT INTO contents (type, id, scope, data, tags, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(type, id, scope) DO UPDATE SET
+                    data = excluded.data,
+                    tags = excluded.tags,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (
+                type, id, scope,
+                json.dumps(data, ensure_ascii=False),
+                json.dumps(tags, ensure_ascii=False) if tags else None
+            ))
+    
+    def get(self, type: str, id: str, scope: str = "global") -> Optional[dict]:
+        """获取单个内容，不存在返回 None"""
+        cursor = self.conn.execute("""
+            SELECT id, type, scope, data, tags, created_at, updated_at
+            FROM contents
+            WHERE type = ? AND id = ? AND scope = ?
+        """, (type, id, scope))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return self._row_to_dict(row)
+    
+    def list(self, type: str, scope: str = "global",
+             tags: list[str] = None) -> list[dict]:
+        """列出指定类型的所有内容，可按 tags 筛选"""
+        cursor = self.conn.execute("""
+            SELECT id, type, scope, data, tags, created_at, updated_at
+            FROM contents
+            WHERE type = ? AND scope = ?
+            ORDER BY updated_at DESC
+        """, (type, scope))
+        
+        results = []
+        for row in cursor.fetchall():
+            item = self._row_to_dict(row)
+            # 按标签筛选（包含任一标签即匹配）
+            if tags:
+                item_tags = item.get("tags") or []
+                if not any(t in item_tags for t in tags):
+                    continue
+            results.append(item)
+        
+        return results
+    
+    def delete(self, type: str, id: str, scope: str = "global") -> bool:
+        """删除内容（硬删除），返回是否删除成功"""
+        with self.transaction() as conn:
+            cursor = conn.execute("""
+                DELETE FROM contents
+                WHERE type = ? AND id = ? AND scope = ?
+            """, (type, id, scope))
+            return cursor.rowcount > 0
+    
+    def exists(self, type: str, id: str, scope: str = "global") -> bool:
+        """检查内容是否存在"""
+        cursor = self.conn.execute("""
+            SELECT 1 FROM contents
+            WHERE type = ? AND id = ? AND scope = ?
+        """, (type, id, scope))
+        return cursor.fetchone() is not None
+    
+    def search(self, type: str, keyword: str,
+               scope: str = "global") -> list[dict]:
+        """在 data 中搜索关键词"""
+        cursor = self.conn.execute("""
+            SELECT id, type, scope, data, tags, created_at, updated_at
+            FROM contents
+            WHERE type = ? AND scope = ? AND data LIKE ?
+            ORDER BY updated_at DESC
+        """, (type, scope, f"%{keyword}%"))
+        
+        return [self._row_to_dict(row) for row in cursor.fetchall()]
+    
+    def _row_to_dict(self, row) -> dict:
+        """将数据库行转换为字典"""
+        return {
+            "id": row["id"],
+            "type": row["type"],
+            "scope": row["scope"],
+            "data": json.loads(row["data"]) if row["data"] else {},
+            "tags": json.loads(row["tags"]) if row["tags"] else None,
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }

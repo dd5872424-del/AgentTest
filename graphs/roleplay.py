@@ -1,17 +1,27 @@
 """
 角色扮演图：带情绪追踪和角色设定
+
+状态会通过 checkpointer 自动持久化，包括：
+- messages: 对话历史
+- character: 角色设定（首次从资产库加载）
+- mood: 情绪状态（跨轮次保持）
+- memories: 相关记忆
 """
 from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from core.tools import ChatTools
 from core.state import RoleplayState
-from core.storage import MemoryStore
-from core.nodes import retrieve_memory, save_memory_if
 
 
-def build_graph(conversation_id: str, memory_store: MemoryStore):
-    """构建角色扮演图"""
-    tools = ChatTools(conversation_id, memory_store=memory_store)
+def build_graph(checkpointer: BaseCheckpointSaver = None):
+    """
+    构建角色扮演图
+    
+    Args:
+        checkpointer: LangGraph checkpointer（状态持久化）
+    """
+    tools = ChatTools()
     
     # 角色内心思考
     def think(state):
@@ -24,7 +34,7 @@ def build_graph(conversation_id: str, memory_store: MemoryStore):
             return {"inner_thought": ""}
         
         user_said = messages[-1].get("content", "")
-        memory_text = "\n".join([m["content"] for m in memories[:2]]) if memories else "无"
+        memory_text = "\n".join([m.get("content", str(m)) for m in memories[:2]]) if memories else "无"
         
         prompt = f"""
 你是 {character.get('name', '角色')}，性格：{character.get('personality', '友好')}
@@ -85,31 +95,27 @@ def build_graph(conversation_id: str, memory_store: MemoryStore):
         new_mood = tools.call_llm(prompt).strip()
         return {"mood": new_mood}
     
-    # 条件：每5轮保存一次
-    def should_save(state):
-        return len(state.get("messages", [])) % 5 == 0
-    
     # 构建图
     graph = StateGraph(RoleplayState)
     
-    graph.add_node("retrieve", retrieve_memory(tools, top_k=3))
     graph.add_node("think", think)
     graph.add_node("respond", respond)
     graph.add_node("mood", update_mood)
-    graph.add_node("save", save_memory_if(tools, should_save, type="roleplay"))
     
-    graph.add_edge(START, "retrieve")
-    graph.add_edge("retrieve", "think")
+    graph.add_edge(START, "think")
     graph.add_edge("think", "respond")
     graph.add_edge("respond", "mood")
-    graph.add_edge("mood", "save")
-    graph.add_edge("save", END)
+    graph.add_edge("mood", END)
     
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 def get_initial_state():
-    """初始状态"""
+    """
+    默认初始状态
+    
+    注意：如果会话关联了角色卡，Runtime 会用资产库的数据覆盖这里的默认值
+    """
     return {
         "memories": [],
         "mood": "平静",

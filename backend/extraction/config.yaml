@@ -1,0 +1,33 @@
+# Extraction module configuration
+# This file is independent from backend/config.yaml
+
+extraction:
+  # Default prompt kit or directory (e.g. "shi_jiao")
+  prompts_dir: shi_jiao
+
+  # Chunking defaults
+  chunk_size: 8000
+  overlap: 500
+  chunk_strategy: auto   # auto | fixed | chapters
+  chapter_max: 20000
+
+  # LLM merge across chunks
+  llm_merge: true
+  retry_max: 3
+
+  # Input/Output defaults (optional)
+  input: null
+  input_dir: D:\AIGames\SillyTavern-release\TestBook\Test
+  output: D:\AIGames\SillyTavern-release\TestBook\Test\worldinfo.json
+  output_jsonl: D:\AIGames\SillyTavern-release\TestBook\Test\.worldinfo.partial.jsonl
+
+  # Behavior flags (optional)
+  recursive: true
+  resume: true
+  import_db: false
+  estimate_tokens: false
+  estimate_only: false
+
+  # Optional model overrides
+  model: null
+  temperature: null

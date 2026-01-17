@@ -3,10 +3,11 @@
 
 从小说/设定文本中抽取世界观条目，输出格式兼容 SillyTavern。
 
-提示词配置目录: extraction/prompts/
+提示词配置目录: extraction/prompts/xiuxian/
   - worldinfo_system.html   系统提示词
   - worldinfo_user.html     用户提示词模板
   - worldinfo_gleaning.html Gleaning 补漏提示词
+  - worldinfo_merge.html    合并/去重提示词
 
 输出格式:
 [
@@ -32,6 +33,36 @@ from .base import BaseExtractor
 
 # 提示词目录
 PROMPTS_DIR = Path(__file__).parent / "prompts"
+DEFAULT_PROMPT_KIT = "xiuxian"
+
+
+def _resolve_prompts_dir(prompts_dir: str | None) -> Path:
+    """
+    解析提示词目录：
+
+    - prompts_dir=None：使用默认套件目录 prompts/<DEFAULT_PROMPT_KIT>/
+    - prompts_dir="xiuxian"（单个子文件夹名）：读取 prompts/xiuxian/
+    - prompts_dir="my_prompts/" 或包含路径分隔符：按显式路径处理（兼容旧用法）
+
+    说明：为了更省事，推荐只传“子文件夹名称”（提示词套件名）。
+    """
+    if not prompts_dir:
+        return PROMPTS_DIR / DEFAULT_PROMPT_KIT
+
+    s = str(prompts_dir).strip()
+
+    # 仅子文件夹名：不包含路径分隔符、不含盘符、不允许 "."/".."
+    is_kit_name = (
+        s not in (".", "..")
+        and ("/" not in s and "\\" not in s)
+        and (":" not in s)
+        and not s.endswith(("/", "\\"))
+    )
+    if is_kit_name:
+        return PROMPTS_DIR / s
+
+    # 显式路径（相对/绝对）
+    return Path(s)
 
 
 def _extract_prompt_content(xml_content: str) -> str:
@@ -56,16 +87,14 @@ def load_prompt_file(filename: str, prompts_dir: str = None) -> str:
     加载单个提示词文件
     
     Args:
-        filename: 文件名（如 worldinfo_system.xml）
-        prompts_dir: 提示词目录路径，默认使用 extraction/prompts/
+        filename: 文件名（如 worldinfo_system.html）
+        prompts_dir: 提示词目录路径或套件名，默认使用 extraction/prompts/xiuxian/
     
     Returns:
         提示词内容（去掉外层 <prompt> 标签）
     """
-    if prompts_dir is None:
-        prompt_path = PROMPTS_DIR / filename
-    else:
-        prompt_path = Path(prompts_dir) / filename
+    base_dir = _resolve_prompts_dir(prompts_dir)
+    prompt_path = base_dir / filename
     
     if not prompt_path.exists():
         return ""
@@ -81,12 +110,13 @@ class WorldInfoExtractor(BaseExtractor):
     世界书抽取器
     
     从文本中提取世界观设定，生成可用于 RAG 检索的条目。
-    提示词从 prompts/ 目录下的 XML 文件加载，支持语法高亮和直观编辑。
+    提示词从 prompts/ 目录下的 HTML 文件加载，支持语法高亮和直观编辑。
     
     提示词文件:
-        - prompts/worldinfo_system.html   系统提示词
-        - prompts/worldinfo_user.html     用户提示词模板
-        - prompts/worldinfo_gleaning.html Gleaning 补漏提示词
+        - prompts/xiuxian/worldinfo_system.html   系统提示词
+        - prompts/xiuxian/worldinfo_user.html     用户提示词模板
+        - prompts/xiuxian/worldinfo_gleaning.html Gleaning 补漏提示词
+        - prompts/xiuxian/worldinfo_merge.html    合并/去重提示词
     
     用法:
         extractor = WorldInfoExtractor()
@@ -106,8 +136,11 @@ class WorldInfoExtractor(BaseExtractor):
             if r.success:
                 all_entries.extend(r.data)
         
-        # 自定义提示词目录
+        # 自定义提示词目录（显式路径）
         extractor = WorldInfoExtractor(prompts_dir="my_prompts/")
+
+        # 指定提示词套件（只填子文件夹名）
+        extractor = WorldInfoExtractor(prompts_dir="xiuxian")
     """
     
     def __init__(
@@ -117,8 +150,7 @@ class WorldInfoExtractor(BaseExtractor):
         gleaning_prompt: str = None,
         merge_prompt: str = None,
         enable_gleaning: bool = True,
-        enable_llm_merge: bool = False,
-        preserve_order: bool = False,
+        enable_llm_merge: bool = True,
         prompts_dir: str = None,
         **kwargs
     ):
@@ -130,7 +162,10 @@ class WorldInfoExtractor(BaseExtractor):
             user_prompt_template: 自定义用户提示词模板（需包含 {text} 占位符）
             gleaning_prompt: 自定义 Gleaning 补漏提示词
             enable_gleaning: 是否启用 Gleaning 补漏（二次检查遗漏）
-            prompts_dir: 提示词目录路径，默认使用 extraction/prompts/
+            prompts_dir: 提示词目录路径或套件名：
+                - None: 默认使用 extraction/prompts/xiuxian/
+                - "xiuxian": 只读 extraction/prompts/xiuxian/
+                - "my_prompts/": 显式路径（兼容旧用法）
             **kwargs: 传递给 BaseExtractor 的参数
         """
         super().__init__(**kwargs)
@@ -158,8 +193,6 @@ class WorldInfoExtractor(BaseExtractor):
         )
         self.enable_gleaning = enable_gleaning
         self.enable_llm_merge = enable_llm_merge
-        # LLM 合并默认以顺序为时间线，启用时强制保序
-        self.preserve_order = preserve_order or enable_llm_merge
     
     @staticmethod
     def _get_fallback_system_prompt() -> str:
@@ -320,7 +353,7 @@ class WorldInfoExtractor(BaseExtractor):
         return entries
     
     def postprocess(self, data: list[dict]) -> list[dict]:
-        """后处理：去重并按优先级排序"""
+        """后处理：去重并保留条目顺序"""
         seen_keys = set()
         unique_entries = []
         
@@ -329,10 +362,6 @@ class WorldInfoExtractor(BaseExtractor):
             if primary_key not in seen_keys:
                 seen_keys.add(primary_key)
                 unique_entries.append(entry)
-        
-        # 按优先级排序（可选保留顺序）
-        if not self.preserve_order:
-            unique_entries.sort(key=lambda x: x["priority"], reverse=True)
         
         return unique_entries
     

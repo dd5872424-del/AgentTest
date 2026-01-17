@@ -113,7 +113,9 @@ def load_config(path: str = None) -> Config:
     config_path = Path(path) if path else _find_config_file()
     
     if not config_path.exists():
-        return Config()
+        cfg = Config()
+        _resolve_relative_paths(cfg, Path.cwd())
+        return cfg
     
     with open(config_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
@@ -131,7 +133,23 @@ def load_config(path: str = None) -> Config:
         if "base_url" in secrets:
             data["llm"]["base_url"] = secrets["base_url"]
     
-    return _dict_to_dataclass(Config, data)
+    cfg = _dict_to_dataclass(Config, data)
+    _resolve_relative_paths(cfg, config_path.parent)
+    return cfg
+
+
+def _resolve_relative_paths(cfg: Config, base_dir: Path) -> None:
+    """将配置中的相对路径转换为以 base_dir 为基准的绝对路径"""
+    if cfg.database:
+        cfg.database.app_path = str(_to_abs(cfg.database.app_path, base_dir))
+        cfg.database.content_path = str(_to_abs(cfg.database.content_path, base_dir))
+    if cfg.vector_store:
+        cfg.vector_store.path = str(_to_abs(cfg.vector_store.path, base_dir))
+
+
+def _to_abs(path_value: str, base_dir: Path) -> Path:
+    path = Path(path_value)
+    return path if path.is_absolute() else (base_dir / path)
 
 
 def get_config() -> Config:

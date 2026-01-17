@@ -15,6 +15,7 @@ LLM 输出格式（HTML 标签）:
     - raw_messages: 由 Runtime 追加用户输入，Node 追加 AI 回复
     - current_messages: 由 Node 构建，包含系统设定 + 检索到的世界观 + 历史对话
 """
+import json
 import re
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -125,6 +126,15 @@ def build_graph(checkpointer: BaseCheckpointSaver = None):
             entry_keys = entry.get("key", entry.get("keys", ""))
             if isinstance(entry_keys, str):
                 entry_keys = [k.strip() for k in entry_keys.split(",") if k.strip()]
+            elif entry_keys is None:
+                entry_keys = []
+            else:
+                entry_keys = [k for k in entry_keys if isinstance(k, str) and k.strip()]
+
+            # 合并 name 到关键词列表，提升检索命中率
+            entry_name = entry.get("name", "")
+            if isinstance(entry_name, str) and entry_name.strip():
+                entry_keys.append(entry_name.strip())
             
             if _match_keywords(search_text, keywords, entry_keys):
                 matched.append({
@@ -153,17 +163,35 @@ def build_graph(checkpointer: BaseCheckpointSaver = None):
         preset = state.get("preset", {})
         
         # 1. 构建基础 system prompt
-        base_prompt = preset.get("system_prompt", "你是一个友好的助手。")
+        base_prompt = preset.get(
+            "system_prompt",
+            "你是一个故事引擎，需要根据<worldinfo>和历史对话进行创作",
+        )
         
         # 2. 构建世界观注入内容
         extra_system = []
         if matched_entries:
-            wi_contents = [e["content"] for e in matched_entries if e.get("content")]
-            if wi_contents:
-                wi_text = "\n\n".join(wi_contents)
+            wi_entries = []
+            for e in matched_entries:
+                name = (e.get("name") or "").strip()
+                keys = e.get("key") or []
+                if isinstance(keys, list):
+                    key_text = ", ".join([k for k in keys if k])
+                else:
+                    key_text = str(keys)
+                content = (e.get("content") or "").strip()
+                if not (name or key_text or content):
+                    continue
+                wi_entries.append({
+                    "name": name,
+                    "key": key_text,
+                    "content": content,
+                })
+            if wi_entries:
+                wi_text = json.dumps(wi_entries, ensure_ascii=False)
                 extra_system.append({
                     "role": "system",
-                    "content": f"【相关世界观设定】\n{wi_text}"
+                    "content": f"<worldinfo>\n{wi_text}\n</worldinfo>"
                 })
         
         # 3. 添加输出格式指令

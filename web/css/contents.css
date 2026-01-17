@@ -1,0 +1,209 @@
+/**
+ * 内容管理面板样式
+ */
+
+/* ========================================
+   内容管理面板
+   ======================================== */
+.contents-panel {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: var(--bg-primary);
+    z-index: 500;
+    display: flex;
+    flex-direction: column;
+}
+
+.contents-panel-header {
+    padding: var(--space-md) var(--space-lg);
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--bg-secondary);
+}
+
+.contents-panel-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--accent-cyan);
+}
+
+/* ========================================
+   标签切换
+   ======================================== */
+.contents-tabs {
+    display: flex;
+    gap: var(--space-xs);
+    padding: var(--space-md) var(--space-lg);
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    overflow-x: auto;
+}
+
+.contents-tab {
+    padding: var(--space-sm) var(--space-md);
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 13px;
+    cursor: pointer;
+    border-radius: var(--radius-md);
+    transition: all var(--transition-fast);
+    white-space: nowrap;
+}
+
+.contents-tab:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.contents-tab.active {
+    background: var(--bg-tertiary);
+    color: var(--accent-cyan);
+}
+
+/* ========================================
+   工具栏
+   ======================================== */
+.contents-toolbar {
+    display: flex;
+    gap: var(--space-md);
+    padding: var(--space-md) var(--space-lg);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.contents-toolbar .input {
+    flex: 1;
+    max-width: 300px;
+}
+
+/* ========================================
+   内容列表
+   ======================================== */
+.contents-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: var(--space-md) var(--space-lg);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+}
+
+.content-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    padding: var(--space-md);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.content-item:hover {
+    border-color: var(--accent-cyan);
+    background: var(--bg-tertiary);
+}
+
+.content-item-icon {
+    font-size: 24px;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-md);
+}
+
+.content-item-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.content-item-name {
+    font-weight: 500;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.content-item-meta {
+    display: flex;
+    gap: var(--space-xs);
+    margin-top: 4px;
+    flex-wrap: wrap;
+}
+
+.content-item-actions {
+    display: flex;
+    gap: var(--space-xs);
+    opacity: 0;
+    transition: opacity var(--transition-fast);
+}
+
+.content-item:hover .content-item-actions {
+    opacity: 1;
+}
+
+/* ========================================
+   表单样式
+   ======================================== */
+.form-group {
+    margin-bottom: var(--space-md);
+}
+
+.form-label {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    margin-bottom: var(--space-xs);
+}
+
+.form-group .input {
+    width: 100%;
+}
+
+.form-group textarea.input {
+    min-height: 80px;
+    resize: vertical;
+}
+
+/* 只读输入框 */
+.input[readonly] {
+    background: var(--bg-hover);
+    cursor: not-allowed;
+    opacity: 0.7;
+}
+
+/* 复选框样式 */
+.form-group input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    accent-color: var(--accent-cyan);
+}
+
+/* ========================================
+   响应式
+   ======================================== */
+@media (max-width: 768px) {
+    .contents-toolbar {
+        flex-direction: column;
+    }
+    
+    .contents-toolbar .input {
+        max-width: none;
+    }
+    
+    .content-item-actions {
+        opacity: 1;
+    }
+}
